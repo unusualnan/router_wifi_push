@@ -1,0 +1,10 @@
+[project]
+name = "router-wifi-push"
+version = "0.1.0"
+description = "MiWiFi 路由器设备网速监控"
+requires-python = ">=3.14"
+dependencies = [
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "serverchan-sdk>=1.0.6",
+]
