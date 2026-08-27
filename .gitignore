@@ -11,3 +11,7 @@ wheels/
 
 # Config (contains passwords)
 config.yaml
+.env
+
+# VS Code
+.vscode/
