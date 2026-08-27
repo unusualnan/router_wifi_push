@@ -17,6 +17,8 @@ log = logging.getLogger(__name__)
 
 MIWIFI_KEY = "a2ffa5c9be07488bbb04a3a47d3c5f6a"
 
+MOCK_SPEED_BPS = 8 * 1024 * 1024  # 8 MB/s
+
 
 def get_init_info(ip: str) -> dict:
     """获取路由器初始化信息，包含 newEncryptMode 字段。"""
@@ -100,11 +102,14 @@ def get_device_list(ip: str, token: str) -> list:
     return result.get("list", [])
 
 
-def get_device_speed(ip: str, token: str, target_mac: str) -> tuple[int, str]:
+def get_device_speed(ip: str, token: str, target_mac: str, mock: bool = False) -> tuple[int, str]:
     """获取目标设备的下行速度 (Bit/s) 和设备名称。
 
     返回 (downspeed_bps, device_name)。设备不在线返回 (0, target_mac)。
     """
+    if mock:
+        return MOCK_SPEED_BPS, "MockDevice"
+
     devices = get_device_list(ip, token)
     mac_upper = target_mac.upper()
     for dev in devices:
@@ -165,17 +170,23 @@ def main() -> None:
     target_mac = config["target_mac"]
     threshold_mbps = config["download_threshold_mbps"]
     poll_interval = config.get("poll_interval", 5)
+    mock_mode = config.get("mock_mode", False)
 
     threshold_bps = int(threshold_mbps * 1024 * 1024)
     alert_state = "normal"
 
+    if mock_mode:
+        log.info("Mock 模式: 路由器 API 将返回假数据")
+
     log.info("启动监控: 目标MAC=%s, 阈值=%.1f MB/s, 轮询间隔=%ds", target_mac, threshold_mbps, poll_interval)
 
-    token = login(ip, password)
+    token = ""
+    if not mock_mode:
+        token = login(ip, password)
 
     while True:
         try:
-            speed_bps, device_name = get_device_speed(ip, token, target_mac)
+            speed_bps, device_name = get_device_speed(ip, token, target_mac, mock=mock_mode)
             speed_mbps = speed_bps / 1024 / 1024
 
             log.info("设备 %s 下行速度: %.2f MB/s", device_name, speed_mbps)
@@ -191,11 +202,12 @@ def main() -> None:
                 alert_state = "normal"
 
         except requests.exceptions.RequestException as e:
-            log.error("网络请求失败，尝试重新登录: %s", e)
-            try:
-                token = login(ip, password)
-            except Exception as login_err:
-                log.error("重新登录失败: %s", login_err)
+            log.error("网络请求失败: %s", e)
+            if not mock_mode:
+                try:
+                    token = login(ip, password)
+                except Exception as login_err:
+                    log.error("重新登录失败: %s", login_err)
         except Exception as e:
             log.error("轮询异常: %s", e)
 
