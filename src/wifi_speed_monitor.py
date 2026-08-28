@@ -161,7 +161,24 @@ def send_alert(sendkey: str, device_name: str, speed_mbps: float, threshold_mbps
         log.error("告警推送异常: %s", e)
 
 
+def upload_records(records: list, url: str) -> bool:
+    """批量上传采集记录到 Cloudflare Worker。成功返回 True，失败返回 False。"""
+    if not records:
+        return True
+    payload = {"records": records}
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        resp.raise_for_status()
+        log.info("上传成功: %d 条记录", len(records))
+        return True
+    except Exception as e:
+        log.error("上传失败: %s，将保留数据下次重试", e)
+        return False
+
+
 def main() -> None:
+    from datetime import datetime, timezone
+
     config = load_config()
     sendkey = get_sendkey()
 
@@ -172,11 +189,21 @@ def main() -> None:
     poll_interval = config.get("poll_interval", 5)
     mock_mode = config.get("mock_mode", False)
 
+    upload_enabled = config.get("upload_enabled", False)
+    worker_url = config.get("cloudflare_worker_url", "")
+    upload_interval = config.get("upload_interval", 300)
+    batch_size = config.get("batch_size", 60)
+
     threshold_bps = int(threshold_mbps * 1024 * 1024)
     alert_state = "normal"
+    records = []
+    last_upload_time = time.time()
 
     if mock_mode:
         log.info("Mock 模式: 路由器 API 将返回假数据")
+
+    if upload_enabled and worker_url:
+        log.info("上传已启用: Worker=%s, 间隔=%ds, 批大小=%d", worker_url, upload_interval, batch_size)
 
     log.info("启动监控: 目标MAC=%s, 阈值=%.1f MB/s, 轮询间隔=%ds", target_mac, threshold_mbps, poll_interval)
 
@@ -191,6 +218,7 @@ def main() -> None:
 
             log.info("设备 %s 下行速度: %.2f MB/s", device_name, speed_mbps)
 
+            # 阈值告警
             if speed_bps > threshold_bps:
                 if alert_state == "normal":
                     alert_state = "alerting"
@@ -200,6 +228,19 @@ def main() -> None:
                 if alert_state == "alerting":
                     log.info("速度回落到阈值以下，恢复正常")
                 alert_state = "normal"
+
+            # 数据缓存
+            if upload_enabled and worker_url:
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                records.append({"ts": ts, "download": round(speed_mbps, 1), "upload": 0})
+
+                # 双触发上传
+                now = time.time()
+                should_upload = len(records) >= batch_size or (now - last_upload_time) >= upload_interval
+                if should_upload and records:
+                    if upload_records(records, worker_url):
+                        records = []
+                    last_upload_time = now
 
         except requests.exceptions.RequestException as e:
             log.error("网络请求失败: %s", e)
