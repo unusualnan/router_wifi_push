@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "WiFi Monitor",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/wifi_speed_monitor.py",
+      "console": "integratedTerminal",
+      "env": {
+        "SERVERCHAN_SENDKEY": "SCT405686TT02OSUybxLjG9KI2WxvRruEz"
+      }
+    }
+  ]
+}
