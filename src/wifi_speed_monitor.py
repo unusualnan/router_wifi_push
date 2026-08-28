@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import random
+import re
 import time
 import os
 import sys
@@ -15,48 +16,67 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-MIWIFI_KEY = "a2ffa5c9be07488bbb04a3a47d3c5f6a"
-
 MOCK_SPEED_BPS = 8 * 1024 * 1024  # 8 MB/s
 
 
 def get_init_info(ip: str) -> dict:
     """获取路由器初始化信息，包含 newEncryptMode 字段。"""
-    url = f"http://{ip}/api/xqsystem/init_info"
+    url = f"http://{ip}/cgi-bin/luci/api/xqsystem/init_info"
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
 
-def generate_nonce() -> str:
+def get_web_info(ip: str) -> tuple[str, str]:
+    """从路由器管理页面获取 nonce_key 和设备 MAC 地址。"""
+    url = f"http://{ip}/cgi-bin/luci/web"
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    html = resp.text
+
+    mac_match = re.search(r"var deviceId = '(.*?)'", html)
+    key_match = re.search(r"key: '(.*?)'", html)
+
+    if not mac_match or not key_match:
+        raise RuntimeError("无法从路由器页面提取 deviceId 或 nonce_key")
+
+    mac = mac_match.group(1)
+    nonce_key = key_match.group(1)
+    log.info("获取到设备 MAC: %s, nonce_key: %s", mac, nonce_key[:8] + "...")
+    return mac, nonce_key
+
+
+def generate_nonce(mac: str) -> str:
     """生成 MiWiFi 登录所需的 nonce 字符串。"""
-    rand_part = random.randint(0, 9999)
+    rand_part = random.randint(1000, 9999)
     ts = int(time.time())
-    return f"0_{ts}_{rand_part}"
+    return f"0_{mac}_{ts}_{rand_part}"
 
 
-def hash_password(password: str, nonce: str, encrypt_mode: int) -> str:
+def hash_password(password: str, nonce: str, nonce_key: str, encrypt_mode: int) -> str:
     """根据加密模式对密码进行哈希。encrypt_mode=1 使用 SHA256，否则 SHA1。"""
     if encrypt_mode == 1:
-        inner = hashlib.sha256((password + MIWIFI_KEY).encode()).hexdigest()
+        inner = hashlib.sha256((password + nonce_key).encode()).hexdigest()
         return hashlib.sha256((nonce + inner).encode()).hexdigest()
     else:
-        inner = hashlib.sha1((password + MIWIFI_KEY).encode()).hexdigest()
+        inner = hashlib.sha1((password + nonce_key).encode()).hexdigest()
         return hashlib.sha1((nonce + inner).encode()).hexdigest()
 
 
 def login(ip: str, password: str) -> str:
     """登录路由器，返回 token (stok)。自动检测加密方式。"""
+    mac, nonce_key = get_web_info(ip)
+
+    encrypt_mode = 0
     try:
         init_info = get_init_info(ip)
         encrypt_mode = init_info.get("newEncryptMode", 0)
         log.info("检测到加密模式: %s", "SHA256" if encrypt_mode == 1 else "SHA1")
     except Exception:
         log.warning("无法获取 init_info，默认使用 SHA1")
-        encrypt_mode = 0
 
-    nonce = generate_nonce()
-    hashed_pwd = hash_password(password, nonce, encrypt_mode)
+    nonce = generate_nonce(mac)
+    hashed_pwd = hash_password(password, nonce, nonce_key, encrypt_mode)
 
     url = f"http://{ip}/cgi-bin/luci/api/xqsystem/login"
     data = {
@@ -77,8 +97,8 @@ def login(ip: str, password: str) -> str:
     if encrypt_mode == 0:
         log.warning("SHA1 登录失败，尝试 SHA256")
         encrypt_mode = 1
-        nonce = generate_nonce()
-        hashed_pwd = hash_password(password, nonce, encrypt_mode)
+        nonce = generate_nonce(mac)
+        hashed_pwd = hash_password(password, nonce, nonce_key, encrypt_mode)
         data["password"] = hashed_pwd
         data["nonce"] = nonce
         resp = requests.post(url, data=data, timeout=10)
@@ -112,11 +132,10 @@ def get_device_speed(ip: str, token: str, target_mac: str, mock: bool = False) -
 
     devices = get_device_list(ip, token)
     mac_upper = target_mac.upper()
-    for dev in devices:
-        if dev.get("mac", "").upper() == mac_upper:
-            speed = int(dev.get("statistics", {}).get("downspeed", 0))
-            name = dev.get("name", target_mac)
-            return speed, name
+    dev = next((d for d in devices if d.get("mac", "").upper() == mac_upper), None)
+    if dev:
+        speed = int(dev.get("statistics", {}).get("downspeed", 0))
+        return speed, dev.get("name", target_mac)
     return 0, target_mac
 
 
@@ -212,11 +231,14 @@ def main() -> None:
         token = login(ip, password)
 
     while True:
+        loop_start = time.time()
         try:
+            t0 = time.time()
             speed_bps, device_name = get_device_speed(ip, token, target_mac, mock=mock_mode)
+            api_time = time.time() - t0
             speed_mbps = speed_bps / 1024 / 1024
 
-            log.info("设备 %s 下行速度: %.2f MB/s", device_name, speed_mbps)
+            log.info("设备 %s 下行速度: %.2f MB/s (API耗时 %.2fs)", device_name, speed_mbps, api_time)
 
             # 阈值告警
             if speed_bps > threshold_bps:
@@ -252,7 +274,7 @@ def main() -> None:
         except Exception as e:
             log.error("轮询异常: %s", e)
 
-        time.sleep(poll_interval)
+        time.sleep(max(0, poll_interval - (time.time() - loop_start)))
 
 
 if __name__ == "__main__":
