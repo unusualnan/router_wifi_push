@@ -271,6 +271,13 @@ def main() -> None:
                     token = login(ip, password)
                 except Exception as login_err:
                     log.error("重新登录失败: %s", login_err)
+        except RuntimeError as e:
+            log.error("API 错误: %s", e)
+            if not mock_mode:
+                try:
+                    token = login(ip, password)
+                except Exception as login_err:
+                    log.error("重新登录失败: %s", login_err)
         except Exception as e:
             log.error("轮询异常: %s", e)
 
