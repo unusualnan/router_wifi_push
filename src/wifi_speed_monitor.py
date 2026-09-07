@@ -162,6 +162,32 @@ def get_sendkey() -> str:
     return key
 
 
+def fetch_api_settings(base_url: str) -> dict | None:
+    """从 Cloudflare Worker API 拉取远程设置。成功返回 dict，失败返回 None。"""
+    url = f"{base_url}/api/settings"
+    try:
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if "download_threshold_mbps" in data and "poll_interval" in data:
+            log.info("从 API 获取设置: threshold=%.1f, interval=%ds",
+                     data["download_threshold_mbps"], data["poll_interval"])
+            return data
+        log.warning("API 设置缺少必要字段: %s", data)
+        return None
+    except Exception as e:
+        log.warning("获取 API 设置失败: %s", e)
+        return None
+
+
+def merge_settings(local_config: dict, api_settings: dict) -> dict:
+    """用 API 设置覆盖本地配置中的可覆盖字段，返回新 dict。"""
+    result = dict(local_config)
+    result["download_threshold_mbps"] = api_settings["download_threshold_mbps"]
+    result["poll_interval"] = api_settings["poll_interval"]
+    return result
+
+
 def send_alert(sendkey: str, device_name: str, speed_mbps: float, threshold_mbps: float) -> None:
     """通过 Server酱推送网速告警。"""
     title = "设备网速告警"
@@ -213,6 +239,21 @@ def main() -> None:
     upload_interval = config.get("upload_interval", 300)
     batch_size = config.get("batch_size", 60)
 
+    # 从 API 拉取远程设置（仅启动时一次）
+    if worker_url:
+        api_settings = fetch_api_settings(worker_url)
+        if api_settings:
+            config = merge_settings(config, api_settings)
+            threshold_mbps = config["download_threshold_mbps"]
+            poll_interval = config["poll_interval"]
+            log.info("使用 API 设置: threshold=%.1f, interval=%d",
+                     threshold_mbps, poll_interval)
+        else:
+            log.warning("API 设置不可用，使用本地配置: threshold=%.1f, interval=%d",
+                        threshold_mbps, poll_interval)
+    else:
+        log.info("未配置 cloudflare_worker_url，跳过 API 设置拉取")
+
     threshold_bps = int(threshold_mbps * 1024 * 1024)
     alert_state = "normal"
     records = []
@@ -260,7 +301,7 @@ def main() -> None:
                 now = time.time()
                 should_upload = len(records) >= batch_size or (now - last_upload_time) >= upload_interval
                 if should_upload and records:
-                    if upload_records(records, worker_url):
+                    if upload_records(records, f"{worker_url}/api/upload"):
                         records = []
                     last_upload_time = now
 
