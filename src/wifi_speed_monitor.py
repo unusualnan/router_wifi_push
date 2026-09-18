@@ -295,7 +295,7 @@ def main() -> None:
             # 数据缓存
             if upload_enabled and worker_url:
                 ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                records.append({"ts": ts, "download": round(speed_mbps, 1), "upload": 0})
+                records.append({"ts": ts, "download": round(speed_mbps, 2), "upload": 0})
 
                 # 双触发上传
                 now = time.time()
