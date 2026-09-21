@@ -122,21 +122,31 @@ def get_device_list(ip: str, token: str) -> list:
     return result.get("list", [])
 
 
-def get_device_speed(ip: str, token: str, target_mac: str, mock: bool = False) -> tuple[int, str]:
-    """获取目标设备的下行速度 (Bit/s) 和设备名称。
+def build_device_labels(macs: list) -> dict:
+    """按列表顺序为每台目标设备生成字母标识 (A, B, ...)。"""
+    return {mac: chr(ord("A") + i) for i, mac in enumerate(macs)}
 
-    返回 (downspeed_bps, device_name)。设备不在线返回 (0, target_mac)。
+
+def get_device_speeds(ip: str, token: str, macs: list, mock: bool = False) -> list:
+    """一次获取全部目标设备的下行速度。
+
+    返回 [(mac, downspeed_bps, device_name), ...]，仅包含设备列表中在线的目标设备；
+    离线设备不出现在结果中。mock 模式下每台返回相同固定速度。
     """
     if mock:
-        return MOCK_SPEED_BPS, "MockDevice"
+        labels = build_device_labels(macs)
+        return [(mac, MOCK_SPEED_BPS, f"MockDevice-{labels[mac]}") for mac in macs]
 
     devices = get_device_list(ip, token)
-    mac_upper = target_mac.upper()
-    dev = next((d for d in devices if d.get("mac", "").upper() == mac_upper), None)
-    if dev:
+    by_mac = {d.get("mac", "").upper(): d for d in devices}
+    result = []
+    for mac in macs:
+        dev = by_mac.get(mac.upper())
+        if dev is None:
+            continue
         speed = int(dev.get("statistics", {}).get("downspeed", 0))
-        return speed, dev.get("name", target_mac)
-    return 0, target_mac
+        result.append((mac, speed, dev.get("name", mac)))
+    return result
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -144,10 +154,13 @@ def load_config(path: str = "config.yaml") -> dict:
     with open(path, "r") as f:
         config = yaml.safe_load(f)
 
-    required = ["router_ip", "router_password", "target_mac", "download_threshold_mbps"]
+    required = ["router_ip", "router_password", "target_macs", "download_threshold_mbps"]
     for key in required:
         if key not in config:
             raise ValueError(f"配置文件缺少必要字段: {key}")
+
+    if not isinstance(config["target_macs"], list) or not config["target_macs"]:
+        raise ValueError("配置字段 target_macs 必须是非空列表")
 
     return config
 
@@ -188,9 +201,22 @@ def merge_settings(local_config: dict, api_settings: dict) -> dict:
     return result
 
 
+def evaluate_alert(alert_states: dict, mac: str, speed_bps: int, threshold_bps: int) -> str | None:
+    """按阈值更新某设备的告警状态，返回状态变化: 'alert' | 'recover' | None。"""
+    if speed_bps > threshold_bps:
+        if alert_states[mac] == "normal":
+            alert_states[mac] = "alerting"
+            return "alert"
+        return None
+    if alert_states[mac] == "alerting":
+        alert_states[mac] = "normal"
+        return "recover"
+    return None
+
+
 def send_alert(sendkey: str, device_name: str, speed_mbps: float, threshold_mbps: float) -> None:
     """通过 Server酱推送网速告警。"""
-    title = "设备网速告警"
+    title = f"设备网速告警: {device_name}"
     desp = (
         f"**设备**: {device_name}\n\n"
         f"**当前下行速度**: {speed_mbps:.2f} MB/s\n\n"
@@ -229,7 +255,8 @@ def main() -> None:
 
     ip = config["router_ip"]
     password = config["router_password"]
-    target_mac = config["target_mac"]
+    target_macs = config["target_macs"]
+    device_labels = build_device_labels(target_macs)
     threshold_mbps = config["download_threshold_mbps"]
     poll_interval = config.get("poll_interval", 5)
     mock_mode = config.get("mock_mode", False)
@@ -255,7 +282,7 @@ def main() -> None:
         log.info("未配置 cloudflare_worker_url，跳过 API 设置拉取")
 
     threshold_bps = int(threshold_mbps * 1024 * 1024)
-    alert_state = "normal"
+    alert_states = {mac: "normal" for mac in target_macs}
     records = []
     last_upload_time = time.time()
 
@@ -265,7 +292,7 @@ def main() -> None:
     if upload_enabled and worker_url:
         log.info("上传已启用: Worker=%s, 间隔=%ds, 批大小=%d", worker_url, upload_interval, batch_size)
 
-    log.info("启动监控: 目标MAC=%s, 阈值=%.1f MB/s, 轮询间隔=%ds", target_mac, threshold_mbps, poll_interval)
+    log.info("启动监控: 目标MAC=%s, 阈值=%.1f MB/s, 轮询间隔=%ds", ",".join(target_macs), threshold_mbps, poll_interval)
 
     token = ""
     if not mock_mode:
@@ -275,29 +302,30 @@ def main() -> None:
         loop_start = time.time()
         try:
             t0 = time.time()
-            speed_bps, device_name = get_device_speed(ip, token, target_mac, mock=mock_mode)
+            speeds = get_device_speeds(ip, token, target_macs, mock=mock_mode)
             api_time = time.time() - t0
-            speed_mbps = speed_bps / 1024 / 1024
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            log.info("设备 %s 下行速度: %.2f MB/s (API耗时 %.2fs)", device_name, speed_mbps, api_time)
+            for mac, speed_bps, device_name in speeds:
+                label = device_labels[mac]
+                speed_mbps = speed_bps / 1024 / 1024
 
-            # 阈值告警
-            if speed_bps > threshold_bps:
-                if alert_state == "normal":
-                    alert_state = "alerting"
-                    log.warning("速度超过阈值，触发告警")
+                log.info("设备 %s(%s) 下行速度: %.2f MB/s (API耗时 %.2fs)", device_name, label, speed_mbps, api_time)
+
+                # 阈值告警（每设备独立状态机）
+                transition = evaluate_alert(alert_states, mac, speed_bps, threshold_bps)
+                if transition == "alert":
+                    log.warning("设备 %s 速度超过阈值，触发告警", device_name)
                     send_alert(sendkey, device_name, speed_mbps, threshold_mbps)
-            else:
-                if alert_state == "alerting":
-                    log.info("速度回落到阈值以下，恢复正常")
-                alert_state = "normal"
+                elif transition == "recover":
+                    log.info("设备 %s 速度回落到阈值以下，恢复正常", device_name)
 
-            # 数据缓存
+                # 数据缓存
+                if upload_enabled and worker_url:
+                    records.append({"ts": ts, "device": label, "download": round(speed_mbps, 2), "upload": 0})
+
+            # 双触发上传（每轮检查一次）
             if upload_enabled and worker_url:
-                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                records.append({"ts": ts, "download": round(speed_mbps, 2), "upload": 0})
-
-                # 双触发上传
                 now = time.time()
                 should_upload = len(records) >= batch_size or (now - last_upload_time) >= upload_interval
                 if should_upload and records:

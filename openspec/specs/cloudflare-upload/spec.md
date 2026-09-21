@@ -8,17 +8,17 @@
 
 ### Requirement: 采集数据缓存
 
-系统 SHALL 在每次轮询时将当前采集的数据追加到本地内存缓存。
+系统 SHALL 在每次轮询时，为每台在本轮获得速度的设备各追加一条数据到本地内存缓存。
 
 #### Scenario: 正常缓存
 
-- **WHEN** 系统成功获取设备速度
-- **THEN** 将当前时间戳和下行速度（MB/s）追加到缓存列表，上行速度固定为 0
+- **WHEN** 系统成功获取某台设备的速度
+- **THEN** 将该设备的时间戳和下行速度（MB/s）追加到缓存列表，上行速度固定为 0
 
 #### Scenario: 缓存包含设备名称
 
 - **WHEN** 缓存一条记录
-- **THEN** 记录包含 ts（ISO 8601 UTC 时间）、download（MB/s）、upload（固定 0）
+- **THEN** 记录包含 ts（ISO 8601 UTC 时间）、device（按目标设备列表顺序自动分配的字母）、download（MB/s）、upload（固定 0）
 
 ### Requirement: 批量上传
 
@@ -60,7 +60,7 @@
 #### Scenario: 正常上传
 
 - **WHEN** 触发批量上传
-- **THEN** POST 请求的 Body 为 `{"records": [{"ts": "...", "download": 123.4, "upload": 0}]}`
+- **THEN** POST 请求的 Body 为 `{"records": [{"ts": "...", "device": "A", "download": 123.4, "upload": 0}]}`
 
 ### Requirement: 可配置开关
 

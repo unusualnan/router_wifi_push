@@ -1,10 +1,4 @@
-# speed-alert-monitor Specification
-
-## Purpose
-
-定时轮询多台指定设备的下行速度，超过阈值时通过 Server酱推送微信通知，采用每设备独立状态机避免重复告警。
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: 多目标设备配置
 
@@ -25,6 +19,8 @@
 - **WHEN** `target_macs` 缺失或为空列表
 - **THEN** 系统启动时报错并退出
 
+## MODIFIED Requirements
+
 ### Requirement: 定时轮询设备速度
 
 系统 SHALL 以可配置的间隔（默认 5 秒）定时调用路由器 API，一次获取配置中所有目标设备的瞬时下行速度。
@@ -43,15 +39,6 @@
 
 - **WHEN** 某个目标 MAC 不在设备列表中
 - **THEN** 系统跳过该设备：不获取速度、不记录、不告警，且不改变其告警状态
-
-### Requirement: 可配置阈值
-
-系统 SHALL 支持通过配置文件设置下行速度告警阈值（单位 MB/s）。
-
-#### Scenario: 读取配置
-
-- **WHEN** 系统启动
-- **THEN** 从配置文件读取阈值（MB/s）并转换为 Bit/s 用于比较
 
 ### Requirement: 状态机告警逻辑
 
@@ -81,25 +68,6 @@
 
 - **WHEN** 某设备在轮询中离线被跳过
 - **THEN** 该设备的告警状态保持不变
-
-### Requirement: Server酱微信推送
-
-系统 SHALL 使用 serverchan-sdk 的 `sc_send` 函数推送通知，SendKey 从环境变量 `SERVERCHAN_SENDKEY` 读取。
-
-#### Scenario: 推送成功
-
-- **WHEN** `sc_send` 返回 `code=0`
-- **THEN** 推送完成
-
-#### Scenario: 推送失败
-
-- **WHEN** `sc_send` 返回非零 code 或抛出异常
-- **THEN** 系统记录错误日志但不影响后续轮询
-
-#### Scenario: SendKey 未配置
-
-- **WHEN** 环境变量 `SERVERCHAN_SENDKEY` 不存在
-- **THEN** 系统启动时打印错误信息并退出
 
 ### Requirement: 通知内容格式
 

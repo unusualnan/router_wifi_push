@@ -1,6 +1,21 @@
+import os
+import tempfile
 from unittest.mock import patch, MagicMock
-from wifi_speed_monitor import login, get_device_speed, load_config
 
+import pytest
+
+from wifi_speed_monitor import (
+    login,
+    get_device_speeds,
+    build_device_labels,
+    evaluate_alert,
+    send_alert,
+    load_config,
+    MOCK_SPEED_BPS,
+)
+
+
+MOCK_WEB_HTML = "var deviceId = 'AA:BB:CC:DD:EE:FF';\nkey: 'noncekey123';"
 
 MOCK_INIT_INFO = {
     "code": 0,
@@ -74,13 +89,29 @@ def mock_response(json_data, status_code=200):
     return mock
 
 
+def mock_text_response(html, status_code=200):
+    mock = MagicMock()
+    mock.text = html
+    mock.status_code = status_code
+    mock.raise_for_status.return_value = None
+    return mock
+
+
+def write_config(content):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(content)
+        f.flush()
+        path = f.name
+    return path
+
+
 @patch("wifi_speed_monitor.requests.get")
 def test_login_success(mock_get):
     mock_get.side_effect = [
+        mock_text_response(MOCK_WEB_HTML),
         mock_response(MOCK_INIT_INFO),
-        mock_response(MOCK_LOGIN_SUCCESS),
     ]
-    # login 内部会先 get init_info，再 post login
+    # login 内部会先 get 网页 nonce，再 get init_info，最后 post login
     with patch("wifi_speed_monitor.requests.post") as mock_post:
         mock_post.return_value = mock_response(MOCK_LOGIN_SUCCESS)
         token = login("192.168.31.1", "test_password")
@@ -88,37 +119,112 @@ def test_login_success(mock_get):
 
 
 @patch("wifi_speed_monitor.requests.get")
-def test_get_device_speed(mock_get):
+def test_get_device_speeds_returns_all_online(mock_get):
     mock_get.return_value = mock_response(MOCK_DEVICE_LIST)
-    speed, name = get_device_speed("192.168.31.1", "token123", "AA:BB:CC:DD:EE:FF")
-    assert speed == 8388608
-    assert name == "TestPhone"
+    speeds = get_device_speeds(
+        "192.168.31.1", "token123", ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]
+    )
+    assert speeds == [
+        ("AA:BB:CC:DD:EE:FF", 8388608, "TestPhone"),
+        ("11:22:33:44:55:66", 0, "OtherDevice"),
+    ]
 
 
 @patch("wifi_speed_monitor.requests.get")
-def test_get_device_speed_offline(mock_get):
+def test_get_device_speeds_skips_offline(mock_get):
     mock_get.return_value = mock_response(MOCK_DEVICE_LIST_OFFLINE)
-    speed, name = get_device_speed("192.168.31.1", "token123", "AA:BB:CC:DD:EE:FF")
-    assert speed == 0
-    assert name == "AA:BB:CC:DD:EE:FF"
+    speeds = get_device_speeds(
+        "192.168.31.1", "token123", ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]
+    )
+    assert [mac for mac, _speed, _name in speeds] == ["11:22:33:44:55:66"]
+
+
+def test_get_device_speeds_mock_matches_targets():
+    macs = ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]
+    speeds = get_device_speeds("192.168.31.1", "token", macs, mock=True)
+    assert len(speeds) == len(macs)
+    assert all(speed == MOCK_SPEED_BPS for _mac, speed, _name in speeds)
+    assert [mac for mac, _speed, _name in speeds] == macs
+
+
+def test_build_device_labels():
+    assert build_device_labels(["m1", "m2"]) == {"m1": "A", "m2": "B"}
+
+
+def test_evaluate_alert_independent_states():
+    threshold = 100
+    states = {"A": "normal", "B": "normal"}
+
+    assert evaluate_alert(states, "A", 200, threshold) == "alert"
+    assert states == {"A": "alerting", "B": "normal"}
+
+    # A 持续超阈值不重复告警；B 正常不受影响
+    assert evaluate_alert(states, "A", 200, threshold) is None
+    assert evaluate_alert(states, "B", 50, threshold) is None
+    assert states == {"A": "alerting", "B": "normal"}
+
+    # A 回落后再次超阈值会重新告警
+    assert evaluate_alert(states, "A", 50, threshold) == "recover"
+    assert evaluate_alert(states, "A", 200, threshold) == "alert"
+
+
+@patch("wifi_speed_monitor.sc_send")
+def test_send_alert_title_includes_device_name(mock_sc_send):
+    mock_sc_send.return_value = {"code": 0}
+    send_alert("dummy-key", "TestPhone", 12.5, 5.0)
+    title = mock_sc_send.call_args.args[1]
+    desp = mock_sc_send.call_args.args[2]
+    assert "TestPhone" in title
+    assert "TestPhone" in desp
 
 
 def test_load_config():
-    import tempfile
-    import os
-
-    config_content = """
+    path = write_config(
+        """
 router_ip: "192.168.31.1"
 router_password: "test_pass"
-target_mac: "AA:BB:CC:DD:EE:FF"
+target_macs:
+  - "AA:BB:CC:DD:EE:FF"
 download_threshold_mbps: 5.0
 poll_interval: 5
 """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        f.write(config_content)
-        f.flush()
-        config = load_config(f.name)
-        os.unlink(f.name)
+    )
+    try:
+        config = load_config(path)
+    finally:
+        os.unlink(path)
 
     assert config["router_ip"] == "192.168.31.1"
+    assert config["target_macs"] == ["AA:BB:CC:DD:EE:FF"]
     assert config["download_threshold_mbps"] == 5.0
+
+
+def test_load_config_missing_target_macs():
+    path = write_config(
+        """
+router_ip: "192.168.31.1"
+router_password: "test_pass"
+download_threshold_mbps: 5.0
+"""
+    )
+    try:
+        with pytest.raises(ValueError):
+            load_config(path)
+    finally:
+        os.unlink(path)
+
+
+def test_load_config_empty_target_macs():
+    path = write_config(
+        """
+router_ip: "192.168.31.1"
+router_password: "test_pass"
+target_macs: []
+download_threshold_mbps: 5.0
+"""
+    )
+    try:
+        with pytest.raises(ValueError):
+            load_config(path)
+    finally:
+        os.unlink(path)
