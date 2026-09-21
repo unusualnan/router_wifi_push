@@ -11,5 +11,5 @@
 
 ## 3. 验证
 
-- [ ] 3.1 mock 模式 + `cloudflare_worker_url` 配置：启动时确认尝试拉取 API 并回退到本地配置（API 不可达场景）
-- [ ] 3.2 mock 模式 + `cloudflare_worker_url` 未配置：启动时确认跳过 API 拉取，直接使用本地配置
+- [x] 3.1 mock 模式 + `cloudflare_worker_url` 配置：启动时确认尝试拉取 API 并回退到本地配置（API 不可达场景）
+- [x] 3.2 mock 模式 + `cloudflare_worker_url` 未配置：启动时确认跳过 API 拉取，直接使用本地配置
