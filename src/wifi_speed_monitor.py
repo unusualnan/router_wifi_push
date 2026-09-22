@@ -10,6 +10,13 @@ import requests
 import yaml
 from serverchan_sdk import sc_send
 
+def red(text: str) -> str:
+    """终端下用 ANSI 红色包裹文本，重定向到非终端时返回原样。"""
+    if sys.stdout.isatty():
+        return f"\x1b[31m{text}\x1b[0m"
+    return text
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -183,7 +190,7 @@ def fetch_api_settings(base_url: str) -> dict | None:
         resp.raise_for_status()
         data = resp.json()
         if "download_threshold_mbps" in data and "poll_interval" in data:
-            log.info("从 API 获取设置: threshold=%.1f, interval=%ds",
+            log.info("从 API 获取设置: threshold=%.4f, interval=%ds",
                      data["download_threshold_mbps"], data["poll_interval"])
             return data
         log.warning("API 设置缺少必要字段: %s", data)
@@ -273,10 +280,10 @@ def main() -> None:
             config = merge_settings(config, api_settings)
             threshold_mbps = config["download_threshold_mbps"]
             poll_interval = config["poll_interval"]
-            log.info("使用 API 设置: threshold=%.1f, interval=%d",
+            log.info("使用 API 设置: threshold=%.4f, interval=%d",
                      threshold_mbps, poll_interval)
         else:
-            log.warning("API 设置不可用，使用本地配置: threshold=%.1f, interval=%d",
+            log.warning("API 设置不可用，使用本地配置: threshold=%.4f, interval=%d",
                         threshold_mbps, poll_interval)
     else:
         log.info("未配置 cloudflare_worker_url，跳过 API 设置拉取")
@@ -292,7 +299,7 @@ def main() -> None:
     if upload_enabled and worker_url:
         log.info("上传已启用: Worker=%s, 间隔=%ds, 批大小=%d", worker_url, upload_interval, batch_size)
 
-    log.info("启动监控: 目标MAC=%s, 阈值=%.1f MB/s, 轮询间隔=%ds", ",".join(target_macs), threshold_mbps, poll_interval)
+    log.info("启动监控: 目标MAC=%s, 阈值=%.4f MB/s, 轮询间隔=%ds", ",".join(target_macs), threshold_mbps, poll_interval)
 
     token = ""
     if not mock_mode:
@@ -310,7 +317,7 @@ def main() -> None:
                 label = device_labels[mac]
                 speed_mbps = speed_bps / 1024 / 1024
 
-                log.info("设备 %s(%s) 下行速度: %.2f MB/s (API耗时 %.2fs)", device_name, label, speed_mbps, api_time)
+                log.info("设备 %s(%s) 下行速度: %s MB/s (API耗时 %.2fs)", device_name, label, red(f"{speed_mbps:.2f}"), api_time)
 
                 # 阈值告警（每设备独立状态机）
                 transition = evaluate_alert(alert_states, mac, speed_bps, threshold_bps)
