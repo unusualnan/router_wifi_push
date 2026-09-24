@@ -189,9 +189,11 @@ def fetch_api_settings(base_url: str) -> dict | None:
         resp = requests.get(url, timeout=5)
         resp.raise_for_status()
         data = resp.json()
-        if "download_threshold_mbps" in data and "poll_interval" in data:
-            log.info("从 API 获取设置: threshold=%.4f, interval=%ds",
-                     data["download_threshold_mbps"], data["poll_interval"])
+        if ("download_threshold_mbps" in data and "poll_interval" in data
+                and "push_serverchan" in data):
+            log.info("从 API 获取设置: threshold=%.4f, interval=%ds, push_serverchan=%s",
+                     data["download_threshold_mbps"], data["poll_interval"],
+                     data["push_serverchan"])
             return data
         log.warning("API 设置缺少必要字段: %s", data)
         return None
@@ -205,6 +207,7 @@ def merge_settings(local_config: dict, api_settings: dict) -> dict:
     result = dict(local_config)
     result["download_threshold_mbps"] = api_settings["download_threshold_mbps"]
     result["poll_interval"] = api_settings["poll_interval"]
+    result["push_serverchan"] = api_settings["push_serverchan"]
     return result
 
 
@@ -258,7 +261,6 @@ def main() -> None:
     from datetime import datetime, timezone
 
     config = load_config()
-    sendkey = get_sendkey()
 
     ip = config["router_ip"]
     password = config["router_password"]
@@ -267,6 +269,7 @@ def main() -> None:
     threshold_mbps = config["download_threshold_mbps"]
     poll_interval = config.get("poll_interval", 5)
     mock_mode = config.get("mock_mode", False)
+    push_serverchan = config.get("push_serverchan", False)
 
     upload_enabled = config.get("upload_enabled", False)
     worker_url = config.get("cloudflare_worker_url", "")
@@ -280,13 +283,18 @@ def main() -> None:
             config = merge_settings(config, api_settings)
             threshold_mbps = config["download_threshold_mbps"]
             poll_interval = config["poll_interval"]
-            log.info("使用 API 设置: threshold=%.4f, interval=%d",
-                     threshold_mbps, poll_interval)
+            push_serverchan = config["push_serverchan"]
+            log.info("使用 API 设置: threshold=%.4f, interval=%d, push_serverchan=%s",
+                     threshold_mbps, poll_interval, push_serverchan)
         else:
-            log.warning("API 设置不可用，使用本地配置: threshold=%.4f, interval=%d",
-                        threshold_mbps, poll_interval)
+            log.warning("API 设置不可用，使用本地配置: threshold=%.4f, interval=%d, push_serverchan=%s",
+                        threshold_mbps, poll_interval, push_serverchan)
     else:
         log.info("未配置 cloudflare_worker_url，跳过 API 设置拉取")
+
+    sendkey = get_sendkey() if push_serverchan else ""
+    if not push_serverchan:
+        log.info("Server酱推送已关闭 (push_serverchan=false)")
 
     threshold_bps = int(threshold_mbps * 1024 * 1024)
     alert_states = {mac: "normal" for mac in target_macs}
@@ -323,7 +331,8 @@ def main() -> None:
                 transition = evaluate_alert(alert_states, mac, speed_bps, threshold_bps)
                 if transition == "alert":
                     log.warning("设备 %s 速度超过阈值，触发告警", device_name)
-                    send_alert(sendkey, device_name, speed_mbps, threshold_mbps)
+                    if push_serverchan:
+                        send_alert(sendkey, device_name, speed_mbps, threshold_mbps)
                 elif transition == "recover":
                     log.info("设备 %s 速度回落到阈值以下，恢复正常", device_name)
 

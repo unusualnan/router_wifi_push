@@ -137,6 +137,7 @@ chmod +x ~/start_monitor.sh
 | `poll_interval` | 轮询间隔 (秒) | 5 |
 | `mock_mode` | 模拟模式（测试用） | false |
 | `upload_enabled` | 启用数据上传 | false |
+| `push_serverchan` | 启用 Server酱推送 | false |
 | `cloudflare_worker_url` | Worker URL | - |
 | `upload_interval` | 上传间隔 (秒) | 300 |
 | `batch_size` | 批量上传条数 | 60 |

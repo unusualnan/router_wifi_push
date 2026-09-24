@@ -11,6 +11,7 @@ from wifi_speed_monitor import (
     evaluate_alert,
     send_alert,
     load_config,
+    merge_settings,
     MOCK_SPEED_BPS,
 )
 
@@ -187,6 +188,7 @@ target_macs:
   - "AA:BB:CC:DD:EE:FF"
 download_threshold_mbps: 5.0
 poll_interval: 5
+push_serverchan: false
 """
     )
     try:
@@ -197,6 +199,7 @@ poll_interval: 5
     assert config["router_ip"] == "192.168.31.1"
     assert config["target_macs"] == ["AA:BB:CC:DD:EE:FF"]
     assert config["download_threshold_mbps"] == 5.0
+    assert config["push_serverchan"] is False
 
 
 def test_load_config_missing_target_macs():
@@ -212,6 +215,23 @@ download_threshold_mbps: 5.0
             load_config(path)
     finally:
         os.unlink(path)
+
+
+def test_merge_settings_includes_push_serverchan():
+    local = {
+        "download_threshold_mbps": 5.0,
+        "poll_interval": 5,
+        "push_serverchan": False,
+    }
+    api = {
+        "download_threshold_mbps": 8.0,
+        "poll_interval": 10,
+        "push_serverchan": True,
+    }
+    merged = merge_settings(local, api)
+    assert merged["push_serverchan"] is True
+    assert merged["download_threshold_mbps"] == 8.0
+    assert merged["poll_interval"] == 10
 
 
 def test_load_config_empty_target_macs():
